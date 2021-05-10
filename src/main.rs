@@ -374,14 +374,14 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
             new_dvs.insert(node.index, new_dv);
         }
 
+        html_factory.create(|w| {
+            w.write_all(writer.as_slice())?;
+            Ok(())
+        })?;
+
         if changed_nodes.is_empty() {
             Ok(NewState::NotChanged)
         } else {
-            html_factory.create(|w| {
-                w.write_all(writer.as_slice())?;
-                Ok(())
-            })?;
-
             Ok(NewState::Changed(self.build_world(
                 &self.copy_relations(),
                 &new_dvs,
