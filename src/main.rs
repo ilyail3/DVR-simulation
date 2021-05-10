@@ -1,42 +1,17 @@
+mod repr;
+mod cost;
+
 use std::collections::{HashMap, HashSet, BTreeMap};
 use std::error::Error;
 use std::fmt::Display;
 use std::io::Write;
 use std::ops::Add;
-use std::fs::File;
-
-#[derive(Debug, Clone, PartialEq)]
-enum DVValue<W: PartialOrd + Clone + Add<Output=W> + Display> {
-    Infinity,
-    Distance(W, usize),
-    SameNode,
-}
-
-
-impl<W: PartialOrd + Clone + Add<Output=W> + Display> DVValue<W> {
-    fn write_html(&self) -> String {
-        match self {
-            DVValue::Infinity => String::from("&infin;"),
-            DVValue::Distance(v, _) => format!("{}", v),
-            DVValue::SameNode => String::from("0")
-        }
-    }
-
-    fn write_html_long(&self, names: &BTreeMap<usize, String>) -> String {
-        match self {
-            DVValue::Infinity => String::from("&infin;"),
-            DVValue::Distance(v, id) => format!(
-                "{}({})",
-                v,
-                names.get(id).unwrap()
-            ),
-            DVValue::SameNode => String::from("0")
-        }
-    }
-}
+use crate::cost::DVValue;
+use crate::repr::{HtmlFormula, DistanceCalculationLine, HtmlFile};
+use std::path::Path;
 
 #[derive(Debug, Clone)]
-struct Node<W: PartialOrd + Clone + Add<Output=W> + Display> {
+struct Node<W: Ord + Clone + Add<Output=W> + Display> {
     name: String,
     dv: Vec<DVValue<W>>,
     inbox: Vec<(usize, Vec<DVValue<W>>)>,
@@ -45,24 +20,24 @@ struct Node<W: PartialOrd + Clone + Add<Output=W> + Display> {
 }
 
 #[derive(Debug)]
-enum Operation<W: PartialOrd + Clone + Add<Output=W> + Display> {
+enum Operation<W: Ord + Clone + Add<Output=W> + Display> {
     ChangeWeight(usize, usize, W)
 }
 
 #[derive(Debug)]
-struct World<W: PartialOrd + Clone + Add<Output=W> + Display> {
+struct World<W: Ord + Clone + Add<Output=W> + Display> {
     nodes: HashMap<String, Node<W>>,
     node_names: BTreeMap<usize, String>,
     generation: u32,
 }
 
 #[derive(Debug)]
-enum NewState<W: PartialOrd + Clone + Add<Output=W> + Display> {
+enum NewState<W: Ord + Clone + Add<Output=W> + Display> {
     Changed(World<W>),
     NotChanged,
 }
 
-fn modify_dv<W: PartialOrd + Clone + Add<Output=W> + Display>(
+fn modify_dv<W: Ord + Clone + Add<Output=W> + Display>(
     original: &Vec<DVValue<W>>,
     node_b: usize,
     new_w: W,
@@ -83,7 +58,7 @@ fn modify_dv<W: PartialOrd + Clone + Add<Output=W> + Display>(
 }
 
 
-impl<W: PartialOrd + Clone + Add<Output=W> + Display> World<W> {
+impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
     pub fn new(node_names: Vec<&str>) -> World<W> {
         let mut result: HashMap<String, Node<W>> = HashMap::with_capacity(node_names.len());
         let mut node_names_out: BTreeMap<usize, String> = BTreeMap::new();
@@ -297,12 +272,8 @@ impl<W: PartialOrd + Clone + Add<Output=W> + Display> World<W> {
 
             for (conn, v) in &node.connected {
                 relations.insert((node.index, conn.to_owned()), v.to_owned());
-                //direct_cost.insert(conn.to_owned(), v.to_owned());
-                let cost:Option<W> = match node.dv.get(*conn).unwrap()  {
-                    DVValue::Distance(w, _) => Some(w.to_owned()),
-                    _ => None
-                };
-                direct_cost.insert(conn.to_owned(), cost.unwrap());
+
+                direct_cost.insert(conn.to_owned(), v.to_owned());
             }
 
             let mut new_dv = Vec::new();
@@ -315,79 +286,43 @@ impl<W: PartialOrd + Clone + Add<Output=W> + Display> World<W> {
                     // lines.push(format!("D<sub>{}</sub>({})=0", node.name, node.name));
                     new_dv.push(DVValue::SameNode);
                 } else {
-                    let mut v:DVValue<W> = DVValue::Infinity;
-
                     // For debug printing
-                    let mut line = format!(
-                        "d<sub>{}</sub>({})=min(",
-                        node.name,
-                        self.node_names.get(&index).unwrap()
-                    );
+                    let mut formula =
+                        HtmlFormula::new(index, node.index);
 
-                    let mut first = true;
-
-                    for (node_b, _) in &node.inbox {
-                        if first {
-                            first = false;
-                        } else {
-                            line += ", ";
-                        }
-
-                        line += format!(
-                            "C({},{})+d<sub>{}</sub>({})",
-                            node.name,
-                            self.node_names.get(node_b).unwrap(),
-                            self.node_names.get(node_b).unwrap(),
-                            self.node_names.get(&index).unwrap()
-                        ).as_str();
-                    }
-
-                    line += ")=min(";
-                    let mut first = true;
 
                     for (node_b, node_b_vector) in &node.inbox {
-                        if first {
-                            first = false;
+                        let cost = direct_cost.get(node_b).unwrap().to_owned();
+
+                        if *node_b == index {
+                            formula.add_direct(
+                                *node_b,
+                                node.index,
+                                cost
+                            );
                         } else {
-                            line += ", ";
-                        }
-
-                        line += format!("{}", direct_cost.get(node_b).unwrap()).as_str();
-                        line += "+";
-                        line += node_b_vector.get(index).unwrap().write_html().as_str();
-
-
-                        let node_b_cost = match node_b_vector.get(index).unwrap() {
-                            DVValue::Infinity => None,
-                            DVValue::Distance(old_w, _) =>
-                                Some(old_w.to_owned() + direct_cost.get(node_b).unwrap().to_owned()),
-                            DVValue::SameNode =>
-                                Some(direct_cost.get(node_b).unwrap().to_owned())
-                        };
-
-                        if let Some(new_w) = node_b_cost {
-                            let replace = match &v {
-                                DVValue::Infinity => true,
-                                DVValue::Distance(old_w, _) => old_w.to_owned() > new_w,
-                                DVValue::SameNode => false
-                            };
-
-                            if replace {
-                                v = DVValue::Distance(new_w, *node_b);
-                            }
+                            formula.add_indirect(
+                                *node_b,
+                                node.index,
+                                cost,
+                                index,
+                                *node_b,
+                                node_b_vector
+                                    .get(index)
+                                    .unwrap()
+                                    .into()
+                            );
                         }
                     }
 
-                    line += ")=";
-                    line += v.write_html().as_str();
+                    let v = formula.min_vector();
 
                     if v != v_old.to_owned() {
                         changed_nodes.insert(node.index);
                     }
 
                     new_dv.push(v);
-
-                    lines.push(line);
+                    lines.push(formula.render(&self.node_names));
                 }
 
                 index += 1;
@@ -433,37 +368,7 @@ impl<W: PartialOrd + Clone + Add<Output=W> + Display> World<W> {
     }
 }
 
-fn initial_world() -> Result<World<u32>, Box<dyn Error>> {
-    let world: World<u32> = World::new(vec!("A", "B", "C", "D", "E", "F", "G", "H"));
-    //println!("op:{:#?}", world.add_interface("A","B",12)?);
 
-    Ok(world.apply_operations(vec!(
-        world.add_interface("A", "D", 3)?,
-        world.add_interface("A", "G", 1)?,
-        world.add_interface("B", "E", 2)?,
-        world.add_interface("B", "H", 1)?,
-        world.add_interface("C", "D", 1)?,
-        world.add_interface("C", "F", 2)?,
-        world.add_interface("D", "G", 6)?,
-        world.add_interface("D", "F", 5)?,
-        world.add_interface("E", "F", 1)?,
-        world.add_interface("E", "H", 3)?,
-        world.add_interface("F", "H", 8)?,
-    )))
-}
-
-fn initial_world2() -> Result<World<u32>, Box<dyn Error>> {
-    let world: World<u32> = World::new(vec!("A", "B", "C", "D"));
-    //println!("op:{:#?}", world.add_interface("A","B",12)?);
-
-    Ok(world.apply_operations(vec!(
-        world.add_interface("A", "B", 2)?,
-        world.add_interface("B", "C", 7)?,
-        world.add_interface("C", "D", 4)?,
-        world.add_interface("A", "D", 8)?,
-        world.add_interface("B", "D", 9)?
-    )))
-}
 
 fn run_until_stable<Writer: Write>(writer: &mut Writer, world: World<u32>) -> Result<World<u32>, Box<dyn Error>> {
     match world.run_simulation(writer)? {
@@ -477,30 +382,73 @@ fn run_until_stable<Writer: Write>(writer: &mut Writer, world: World<u32>) -> Re
     }
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let world: World<u32> = initial_world2()?;
-    let mut file = File::create("/Users/ilya/Desktop/result.html")?;
+fn exc2(p:&Path) -> Result<(), Box<dyn Error>> {
+    let mut html_file = HtmlFile::new(p.join("exc2.html"))?;
 
-    writeln!(file, "<!DOCTYPE html>")?;
-    writeln!(file, "<html>\n<head>")?;
-    writeln!(file, "<link rel=\"stylesheet\" href=\"styles.css\">")?;
+    let world: World<u32> = World::new(vec!("A", "B", "C", "D", "E", "F", "G", "H"));
+    //println!("op:{:#?}", world.add_interface("A","B",12)?);
 
-    writeln!(file, "</head>\n<body>")?;
-    writeln!(file, "<div class=\"wrapper\">")?;
+    let init = world.apply_operations(vec!(
+        world.add_interface("A", "D", 3)?,
+        world.add_interface("A", "G", 1)?,
+        world.add_interface("B", "E", 2)?,
+        world.add_interface("B", "H", 1)?,
+        world.add_interface("C", "D", 1)?,
+        world.add_interface("C", "F", 2)?,
+        world.add_interface("D", "G", 6)?,
+        world.add_interface("D", "F", 5)?,
+        world.add_interface("E", "F", 1)?,
+        world.add_interface("E", "H", 3)?,
+        world.add_interface("F", "H", 8)?,
+    ));
 
-    world.print_state(&mut file)?;
-    let world1_done = run_until_stable(&mut file, world)?;
+    init.print_state(&mut html_file)?;
+
+    let stable = run_until_stable(&mut html_file, init)?;
+
+    let new_init = stable.apply_operations(vec!(
+        world.add_interface("C", "F", 30)?
+    ));
+
+    new_init.print_state(&mut html_file)?;
+
+    run_until_stable(&mut html_file, new_init)?;
+
+    Ok(())
+}
+
+fn exc3(p:&Path) -> Result<(), Box<dyn Error>> {
+    let mut html_file = HtmlFile::new(p.join("exc3.html"))?;
+
+    let world: World<u32> = World::new(vec!("A", "B", "C", "D"));
+    //println!("op:{:#?}", world.add_interface("A","B",12)?);
+
+    let init = world.apply_operations(vec!(
+        world.add_interface("A", "B", 2)?,
+        world.add_interface("B", "C", 7)?,
+        world.add_interface("C", "D", 4)?,
+        world.add_interface("A", "D", 8)?,
+        world.add_interface("B", "D", 9)?
+    ));
+
+    init.print_state(&mut html_file)?;
+    let world1_done = run_until_stable(&mut html_file, init)?;
 
     let world2 = world1_done.apply_operations(vec!(
         world1_done.add_interface("B", "D", 80)?
     ));
 
-    world2.print_state(&mut file)?;
+    world2.print_state(&mut html_file)?;
 
-    run_until_stable(&mut file, world2)?;
+    run_until_stable(&mut html_file, world2)?;
 
-    writeln!(file, "</div>")?;
-    writeln!(file, "</body>\n</html>")?;
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let output_path = Path::new("/Users/ilya/Desktop/dvr");
+    exc2(output_path)?;
+    exc3(output_path)?;
 
     Ok(())
 }
