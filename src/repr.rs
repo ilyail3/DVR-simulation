@@ -8,6 +8,8 @@ use std::slice::Iter;
 use std::io::Write;
 use std::fs::File;
 use std::path::Path;
+use std::error::Error;
+use std::process::Command;
 
 impl<W: Ord + Clone + Add<Output=W> + Display> DVValue<W> {
     pub fn write_html_long(&self, names: &BTreeMap<usize, String>) -> String {
@@ -281,7 +283,7 @@ impl<W: Ord + Clone + Add<Output=W> + Display> HtmlFormula<W>{
     }
 }
 
-pub struct HtmlFile{
+/*pub struct HtmlFile{
     internal: Box<dyn Write>
 }
 
@@ -301,6 +303,7 @@ impl Drop for HtmlFile {
     }
 }
 
+
 impl HtmlFile {
     pub fn new<P:AsRef<Path>>(path: P) -> std::io::Result<Self> {
         let mut file = File::create(path)?;
@@ -313,5 +316,58 @@ impl HtmlFile {
         writeln!(file, "<div class=\"wrapper\">")?;
 
         Ok(HtmlFile{ internal: Box::new(file) })
+    }
+}*/
+
+pub struct HtmlFiles {
+    folder: String,
+    prefix: String,
+    index: u32
+}
+
+impl HtmlFiles {
+    pub fn new(path: &str, prefix:&str) -> Self {
+        HtmlFiles{
+            folder: path.to_string(),
+            prefix: prefix.to_string(),
+            index: 0
+        }
+    }
+
+    pub fn create<F>(&mut self, cb: F) -> Result<(), Box<dyn Error>>
+        where F : Fn(&mut File) -> Result<(), Box<dyn Error>>  {
+
+        let file_name = format!("{}_{}.html", self.prefix.as_str(), self.index);
+        let pdf_file_name = format!("{}_{}.pdf", self.prefix.as_str(), self.index);
+        self.index += 1;
+        let path = Path::new(self.folder.as_str());
+
+
+        {
+            let mut file = File::create(path.join(file_name.as_str()))?;
+
+            writeln!(file, "<!DOCTYPE html>")?;
+            writeln!(file, "<html>\n<head>")?;
+            writeln!(file, "<link rel=\"stylesheet\" href=\"styles.css\">")?;
+            writeln!(file, "</head>\n<body>")?;
+            writeln!(file, "<div class=\"wrapper\">")?;
+
+            (cb)(&mut file)?;
+
+            writeln!(file, "</div>\n</body>\n</html>")?;
+        }
+
+        Command::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+            .current_dir(path)
+            .arg("--headless")
+            .arg(format!("--print-to-pdf={}",pdf_file_name.as_str()))
+            .arg("--disable-gpu")
+            .arg("--no-margins")
+            .arg("--print-to-pdf-no-header")
+            .arg(file_name.as_str())
+            .output()?;
+
+
+        Ok(())
     }
 }

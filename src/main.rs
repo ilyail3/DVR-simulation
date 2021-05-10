@@ -7,7 +7,7 @@ use std::fmt::Display;
 use std::io::Write;
 use std::ops::Add;
 use crate::cost::DVValue;
-use crate::repr::{HtmlFormula, DistanceCalculationLine, HtmlFile};
+use crate::repr::{HtmlFormula, DistanceCalculationLine, HtmlFiles};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -241,7 +241,7 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
         dvs
     }
 
-    fn apply_operations<Writer:Write>(&self, writer:&mut Writer, operations: Vec<Operation<W>>) -> Result<Self, Box<dyn Error>> {
+    fn apply_operations(&self, html_factory:&mut HtmlFiles, operations: Vec<Operation<W>>) -> Result<Self, Box<dyn Error>> {
         let mut relations: HashMap<(usize, usize), W> = self.copy_relations();
         let mut new_dvs: HashMap<usize, Vec<DVValue<W>>> = self.copy_dvs();
 
@@ -272,12 +272,17 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
             }
         }
 
-        self.build_world(
+        let print_world = self.build_world(
             &relations,
             &new_dvs,
             &self.copy_dvs(),
             false
-        ).print_state(writer)?;
+        );
+
+        html_factory.create(|writer|{
+            print_world.print_state(writer)
+        })?;
+
 
         Ok(self.build_world(
             &relations,
@@ -297,7 +302,9 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
         Ok(())
     }
 
-    fn run_simulation<Writer: Write>(&self, writer: &mut Writer) -> Result<NewState<W>, Box<dyn Error>> {
+    fn run_simulation(&self, html_factory: &mut HtmlFiles) -> Result<NewState<W>, Box<dyn Error>> {
+        let mut writer:Vec<u8> = Vec::new();
+
         writeln!(writer, "<h2>t={}</h2>", self.generation + 1)?;
 
         let mut changed_nodes: HashSet<usize> = HashSet::new();
@@ -357,7 +364,7 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
                 index += 1;
             }
 
-            self.print_node(writer, node, Some(&new_dv))?;
+            self.print_node(&mut writer, node, Some(&new_dv))?;
             writeln!(writer, "<div class=\"details\">")?;
             for line in lines {
                 writeln!(writer, "\t<div>{}</div>", line)?;
@@ -370,6 +377,11 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
         if changed_nodes.is_empty() {
             Ok(NewState::NotChanged)
         } else {
+            html_factory.create(|w| {
+                w.write_all(writer.as_slice())?;
+                Ok(())
+            })?;
+
             Ok(NewState::Changed(self.build_world(
                 &self.copy_relations(),
                 &new_dvs,
@@ -382,9 +394,9 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
 
 
 
-fn run_until_stable<Writer: Write>(writer: &mut Writer, world: World<u32>) -> Result<World<u32>, Box<dyn Error>> {
-    match world.run_simulation(writer)? {
-        NewState::Changed(w2) => run_until_stable(writer, w2),
+fn run_until_stable(html_factory: &mut HtmlFiles, world: World<u32>) -> Result<World<u32>, Box<dyn Error>> {
+    match world.run_simulation(html_factory)? {
+        NewState::Changed(w2) => run_until_stable(html_factory, w2),
         // When no-change advance the generation on by 1
         NewState::NotChanged => Ok(World{
             nodes: world.nodes,
@@ -394,12 +406,12 @@ fn run_until_stable<Writer: Write>(writer: &mut Writer, world: World<u32>) -> Re
 }
 
 fn exc2(p:&Path) -> Result<(), Box<dyn Error>> {
-    let mut html_file = HtmlFile::new(p.join("exc2.html"))?;
+    let mut html_factory = HtmlFiles::new(p.to_str().unwrap(), "exc2");
 
     let world: World<u32> = World::new(vec!("A", "B", "C", "D", "E", "F", "G", "H"));
     //println!("op:{:#?}", world.add_interface("A","B",12)?);
 
-    let init = world.apply_operations(&mut html_file, vec!(
+    let init = world.apply_operations(&mut html_factory, vec!(
         world.add_interface("A", "D", 3)?,
         world.add_interface("A", "G", 1)?,
         world.add_interface("B", "E", 2)?,
@@ -413,24 +425,24 @@ fn exc2(p:&Path) -> Result<(), Box<dyn Error>> {
         world.add_interface("F", "H", 8)?,
     ))?;
 
-    let stable = run_until_stable(&mut html_file, init)?;
+    let stable = run_until_stable(&mut html_factory, init)?;
 
-    let new_init = stable.apply_operations(&mut html_file, vec!(
+    let new_init = stable.apply_operations(&mut html_factory, vec!(
         world.add_interface("C", "F", 30)?
     ))?;
 
-    run_until_stable(&mut html_file, new_init)?;
+    run_until_stable(&mut html_factory, new_init)?;
 
     Ok(())
 }
 
 fn exc3(p:&Path) -> Result<(), Box<dyn Error>> {
-    let mut html_file = HtmlFile::new(p.join("exc3.html"))?;
+    let mut html_factory = HtmlFiles::new(p.to_str().unwrap(), "exc3");
 
     let world: World<u32> = World::new(vec!("A", "B", "C", "D"));
     //println!("op:{:#?}", world.add_interface("A","B",12)?);
 
-    let init = world.apply_operations(&mut html_file, vec!(
+    let init = world.apply_operations(&mut html_factory, vec!(
         world.add_interface("A", "B", 2)?,
         world.add_interface("B", "C", 7)?,
         world.add_interface("C", "D", 4)?,
@@ -438,13 +450,13 @@ fn exc3(p:&Path) -> Result<(), Box<dyn Error>> {
         world.add_interface("B", "D", 9)?
     ))?;
 
-    let world1_done = run_until_stable(&mut html_file, init)?;
+    let world1_done = run_until_stable(&mut html_factory, init)?;
 
-    let world2 = world1_done.apply_operations(&mut html_file, vec!(
+    let world2 = world1_done.apply_operations(&mut html_factory, vec!(
         world1_done.add_interface("B", "D", 80)?
     ))?;
 
-    run_until_stable(&mut html_file, world2)?;
+    run_until_stable(&mut html_factory, world2)?;
 
     Ok(())
 }
