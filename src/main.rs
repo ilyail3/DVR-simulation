@@ -22,7 +22,8 @@ struct Node<W: Ord + Clone + Add<Output=W> + Display> {
     name: String,
     dv: Vec<DVValue<W>>,
     neighbors: Vec<Neighbor<W>>,
-    index: usize
+    index: usize,
+    has_updates: bool
 }
 
 #[derive(Debug)]
@@ -81,7 +82,8 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
                 name: name.to_owned(),
                 dv: dv_vector,
                 neighbors: Vec::new(),
-                index
+                index,
+                has_updates: false
             });
 
             index += 1;
@@ -176,9 +178,15 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
         relations: &HashMap<(usize, usize), W>,
         main_dvs: &HashMap<usize, Vec<DVValue<W>>>,
         inbox_dvs: &HashMap<usize, Vec<DVValue<W>>>,
+        updated_nodes: &HashSet<usize>,
         advance_generation: bool
     ) -> Self {
         let mut nodes: Vec<Node<W>> = Vec::new();
+        let mut has_updates: HashSet<usize> = HashSet::new();
+
+        for node_index in updated_nodes {
+            Self::update_has_updates(&mut has_updates, relations, *node_index);
+        }
 
         for node in &self.nodes {
             let mut neighbors:Vec<Neighbor<W>> = Vec::new();
@@ -199,6 +207,7 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
                 name: node.name.to_owned(),
                 dv: main_dvs.get(&node.index).unwrap().to_owned(),
                 index: node.index,
+                has_updates: has_updates.contains(&node.index),
                 neighbors
             });
         }
@@ -241,9 +250,18 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
         dvs
     }
 
+    fn update_has_updates(has_updates: &mut HashSet<usize>, relations: &HashMap<(usize, usize), W>, node: usize){
+        for ((node_a, node_b), _) in relations {
+            if *node_a == node {
+                has_updates.insert(*node_b);
+            }
+        }
+    }
+
     fn apply_operations(&self, html_factory:&mut HtmlFiles, operations: Vec<Operation<W>>) -> Result<Self, Box<dyn Error>> {
         let mut relations: HashMap<(usize, usize), W> = self.copy_relations();
         let mut new_dvs: HashMap<usize, Vec<DVValue<W>>> = self.copy_dvs();
+        let mut updated_nodes: HashSet<usize> = HashSet::new();
 
         for op in operations {
             match op {
@@ -268,6 +286,9 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
                             new_w.to_owned(),
                         ),
                     );
+
+                    updated_nodes.insert(node_a);
+                    updated_nodes.insert(node_b);
                 }
             }
         }
@@ -276,6 +297,7 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
             &relations,
             &new_dvs,
             &self.copy_dvs(),
+            &updated_nodes,
             false
         );
 
@@ -288,6 +310,7 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
             &relations,
             &new_dvs,
             &new_dvs,
+            &updated_nodes,
             false
         ))
     }
@@ -307,71 +330,76 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
 
         writeln!(writer, "<h2>t={}</h2>", self.generation + 1)?;
 
-        let mut changed_nodes: HashSet<usize> = HashSet::new();
+        let mut updated_nodes: HashSet<usize> = HashSet::new();
         let mut new_dvs: HashMap<usize, Vec<DVValue<W>>> = self.copy_dvs();
         let names = self.node_names();
 
         for node in &self.nodes {
-            let mut new_dv = Vec::new();
-            let mut index: usize = 0;
+            if node.has_updates {
+                let mut new_dv = Vec::new();
+                let mut index: usize = 0;
 
-            let mut lines: Vec<String> = Vec::new();
+                let mut lines: Vec<String> = Vec::new();
 
-            for v_old in &node.dv {
-                if index == node.index {
-                    new_dv.push(DVValue::SameNode);
-                } else {
-                    // For debug printing
-                    let mut formula =
-                        HtmlFormula::new(index, node.index);
+                for v_old in &node.dv {
+                    if index == node.index {
+                        new_dv.push(DVValue::SameNode);
+                    } else {
+                        // For debug printing
+                        let mut formula =
+                            HtmlFormula::new(index, node.index);
 
-                    for neighbour in &node.neighbors {
-                        if neighbour.index == index {
-                            formula.add_direct(
-                                neighbour.index,
-                                node.index,
-                                neighbour
-                                    .direct_cost
-                                    .to_owned()
-                            );
-                        } else {
-                            formula.add_indirect(
-                                neighbour.index,
-                                node.index,
-                                neighbour
-                                    .direct_cost
-                                    .to_owned() ,
-                                index,
-                                neighbour.index,
-                                neighbour.dv
-                                    .get(index)
-                                    .unwrap()
-                                    .into()
-                            );
+                        for neighbour in &node.neighbors {
+                            if neighbour.index == index {
+                                formula.add_direct(
+                                    neighbour.index,
+                                    node.index,
+                                    neighbour
+                                        .direct_cost
+                                        .to_owned()
+                                );
+                            } else {
+                                formula.add_indirect(
+                                    neighbour.index,
+                                    node.index,
+                                    neighbour
+                                        .direct_cost
+                                        .to_owned(),
+                                    index,
+                                    neighbour.index,
+                                    neighbour.dv
+                                        .get(index)
+                                        .unwrap()
+                                        .into()
+                                );
+                            }
                         }
+
+                        let v = formula.min_vector();
+
+                        if v != v_old.to_owned() {
+                            updated_nodes.insert(node.index);
+                        }
+
+                        new_dv.push(v);
+                        lines.push(formula.render(&names));
                     }
 
-                    let v = formula.min_vector();
-
-                    if v != v_old.to_owned() {
-                        changed_nodes.insert(node.index);
-                    }
-
-                    new_dv.push(v);
-                    lines.push(formula.render(&names));
+                    index += 1;
                 }
 
-                index += 1;
-            }
+                self.print_node(&mut writer, node, Some(&new_dv))?;
+                writeln!(writer, "<div class=\"details\">")?;
+                for line in lines {
+                    writeln!(writer, "\t<div>{}</div>", line)?;
+                }
+                writeln!(writer, "</div>")?;
 
-            self.print_node(&mut writer, node, Some(&new_dv))?;
-            writeln!(writer, "<div class=\"details\">")?;
-            for line in lines {
-                writeln!(writer, "\t<div>{}</div>", line)?;
+                new_dvs.insert(node.index, new_dv);
+            } else {
+                self.print_node(&mut writer, node, None)?;
+                new_dvs.insert(node.index, node.dv.clone());
             }
-            writeln!(writer, "</div>")?;
-
-            new_dvs.insert(node.index, new_dv);
         }
 
         html_factory.create(|w| {
@@ -379,13 +407,14 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
             Ok(())
         })?;
 
-        if changed_nodes.is_empty() {
+        if updated_nodes.is_empty() {
             Ok(NewState::NotChanged)
         } else {
             Ok(NewState::Changed(self.build_world(
                 &self.copy_relations(),
                 &new_dvs,
                 &new_dvs,
+                &updated_nodes,
                 true
             )))
         }
