@@ -32,9 +32,8 @@ enum Operation<W: Ord + Clone + Add<Output=W> + Display> {
 
 #[derive(Debug)]
 struct World<W: Ord + Clone + Add<Output=W> + Display> {
-    nodes: HashMap<String, Node<W>>,
-    node_names: BTreeMap<usize, String>,
-    generation: u32,
+    nodes: Vec<Node<W>>,
+    generation: u32
 }
 
 #[derive(Debug)]
@@ -66,47 +65,53 @@ fn modify_dv<W: Ord + Clone + Add<Output=W> + Display>(
 
 impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
     pub fn new(node_names: Vec<&str>) -> World<W> {
-        let mut result: HashMap<String, Node<W>> = HashMap::with_capacity(node_names.len());
-        let mut node_names_out: BTreeMap<usize, String> = BTreeMap::new();
+        let size = node_names.len();
+
         let mut index: usize = 0;
+        let mut nodes: Vec<Node<W>> = Vec::with_capacity(size);
 
-        for name in &node_names {
-            let mut dv_vector: Vec<DVValue<W>> = Vec::new();
+        for name in node_names {
+            let mut dv_vector: Vec<DVValue<W>> = Vec::with_capacity(size);
 
-            let mut sub_index: usize = 0;
-            for _ in &node_names {
-                if sub_index == index {
-                    dv_vector.push(DVValue::SameNode)
-                } else {
-                    dv_vector.push(DVValue::Infinity)
-                }
-
-                sub_index += 1;
+            for _ in 0 .. size {
+                dv_vector.push(DVValue::Infinity)
             }
 
-            result.insert(name.to_string(), Node {
-                name: name.to_string(),
+            nodes.push(Node{
+                name: name.to_owned(),
                 dv: dv_vector,
                 neighbors: Vec::new(),
                 index
             });
 
-            node_names_out.insert(index, name.to_string());
-
             index += 1;
         }
 
-        World { nodes: result, node_names: node_names_out, generation: 0 }
+        World { nodes, generation: 0 }
+    }
+
+    fn find_node(&self, name: &str) -> Option<&Node<W>> {
+        self.nodes
+            .iter()
+            .find(|n| n.name == name)
+    }
+
+    fn node_names(&self) -> BTreeMap<usize, String> {
+        let mut names:BTreeMap<usize, String> = BTreeMap::new();
+
+        for sub_node in &self.nodes {
+            names.insert(sub_node.index, sub_node.name.to_owned());
+        }
+
+        names
     }
 
     fn add_interface(&self, node_a: &str, node_b: &str, weight: W) -> Result<Operation<W>, Box<dyn Error>> {
         Ok(Operation::ChangeWeight(
-            self.nodes
-                .get(node_a)
+            self.find_node(node_a)
                 .map(|n| n.index)
                 .ok_or("can't find node_a")?,
-            self.nodes
-                .get(node_b)
+            self.find_node(node_b)
                 .map(|n| n.index)
                 .ok_or("can't find node_b")?,
             weight,
@@ -114,11 +119,12 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
     }
 
     fn print_node<Writer: Write>(&self, writer: &mut Writer, node: &Node<W>, changed: Option<&Vec<DVValue<W>>>) -> Result<(), Box<dyn Error>> {
+        let names = self.node_names();
         writeln!(writer, "<table>\n\t<tr>")?;
         writeln!(writer, "\t\t<th>{}</th>", node.name)?;
 
-        for node_name in self.node_names.values() {
-            writeln!(writer, "\t\t<th>{}</th>", node_name)?;
+        for sub_node in &self.nodes {
+            writeln!(writer, "\t\t<th>{}</th>", sub_node.name)?;
         }
 
         writeln!(writer, "\t</tr>\n\t<tr>\n\t\t<th>{}</th>",node.name)?;
@@ -126,19 +132,19 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
         if let Some(new_dv) = changed {
             for (index, new_value) in new_dv.iter().enumerate() {
                 if new_value == node.dv.get(index).unwrap() {
-                    writeln!(writer, "\t\t<td>{}</td>", new_value.write_html_long(&self.node_names))?;
+                    writeln!(writer, "\t\t<td>{}</td>", new_value.write_html_long(&names))?;
                 } else {
                     writeln!(
                         writer,
                         "\t\t<td>{}&#8594;{}</td>",
-                        node.dv.get(index).unwrap().write_html_long(&self.node_names),
-                        new_value.write_html_long(&self.node_names)
+                        node.dv.get(index).unwrap().write_html_long(&names),
+                        new_value.write_html_long(&names)
                     )?;
                 }
             }
         } else {
             for new_value in &node.dv {
-                writeln!(writer, "\t\t<td>{}</td>", new_value.write_html_long(&self.node_names))?;
+                writeln!(writer, "\t\t<td>{}</td>", new_value.write_html_long(&names))?;
             }
         }
 
@@ -150,11 +156,11 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
             writeln!(
                 writer,
                 "\t<tr>\n\t\t<th>{}</th>",
-                self.node_names.get(&neighbor.index).unwrap()
+                names.get(&neighbor.index).unwrap()
             )?;
 
             for v in &neighbor.dv {
-                writeln!(writer, "\t\t<td>{}</td>", v.write_html_long(&self.node_names))?;
+                writeln!(writer, "\t\t<td>{}</td>", v.write_html_long(&names))?;
             }
 
             writeln!(writer, "\t</tr>")?;
@@ -172,9 +178,9 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
         inbox_dvs: &HashMap<usize, Vec<DVValue<W>>>,
         advance_generation: bool
     ) -> Self {
-        let mut new_state: HashMap<String, Node<W>> = HashMap::new();
+        let mut nodes: Vec<Node<W>> = Vec::new();
 
-        for (name, node) in &self.nodes {
+        for node in &self.nodes {
             let mut neighbors:Vec<Neighbor<W>> = Vec::new();
 
             for ((node_a, node_b), new_w) in relations {
@@ -189,7 +195,7 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
 
             neighbors.sort_by_key(|n| n.index);
 
-            new_state.insert(name.to_string(), Node {
+            nodes.push(Node {
                 name: node.name.to_owned(),
                 dv: main_dvs.get(&node.index).unwrap().to_owned(),
                 index: node.index,
@@ -204,13 +210,13 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
                 self.generation
             };
 
-        World { nodes: new_state, generation, node_names: self.node_names.to_owned() }
+        World { nodes, generation }
     }
 
     fn copy_relations(&self) -> HashMap<(usize, usize), W> {
         let mut relations: HashMap<(usize, usize), W> = HashMap::new();
 
-        for (_, node) in &self.nodes {
+        for node in &self.nodes {
             for neighbors in &node.neighbors {
                 relations.insert((node.index, neighbors.index), neighbors.direct_cost.to_owned());
             }
@@ -222,7 +228,7 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
     fn copy_dvs(&self) -> HashMap<usize, Vec<DVValue<W>>> {
         let mut dvs: HashMap<usize, Vec<DVValue<W>>> = HashMap::new();
 
-        for (_, node) in &self.nodes {
+        for node in &self.nodes {
             let mut dv = Vec::new();
 
             for v in &node.dv {
@@ -281,25 +287,10 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
         ))
     }
 
-    fn sorted_nodes(&self) -> Vec<&Node<W>> {
-        let mut indexes:Vec<&usize> = self.node_names.keys().collect();
-        indexes.sort();
-
-        let mut nodes:Vec<&Node<W>> = Vec::new();
-
-        for index in indexes {
-            let node_name = self.node_names.get(index).unwrap();
-
-            nodes.push(self.nodes.get(node_name).unwrap());
-        }
-
-        nodes
-    }
-
     fn print_state<Writer: Write>(&self, writer: &mut Writer) -> Result<(), Box<dyn Error>> {
         writeln!(writer, "<h2>t={}</h2>", self.generation)?;
 
-        for node in self.sorted_nodes() {
+        for node in &self.nodes {
             self.print_node(writer, node, None)?;
         }
 
@@ -311,8 +302,9 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
 
         let mut changed_nodes: HashSet<usize> = HashSet::new();
         let mut new_dvs: HashMap<usize, Vec<DVValue<W>>> = self.copy_dvs();
+        let names = self.node_names();
 
-        for node in self.sorted_nodes() {
+        for node in &self.nodes {
             let mut new_dv = Vec::new();
             let mut index: usize = 0;
 
@@ -359,7 +351,7 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
                     }
 
                     new_dv.push(v);
-                    lines.push(formula.render(&self.node_names));
+                    lines.push(formula.render(&names));
                 }
 
                 index += 1;
@@ -395,7 +387,6 @@ fn run_until_stable<Writer: Write>(writer: &mut Writer, world: World<u32>) -> Re
         NewState::Changed(w2) => run_until_stable(writer, w2),
         // When no-change advance the generation on by 1
         NewState::NotChanged => Ok(World{
-            node_names: world.node_names,
             nodes: world.nodes,
             generation: world.generation+1
         })
