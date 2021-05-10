@@ -11,12 +11,18 @@ use crate::repr::{HtmlFormula, DistanceCalculationLine, HtmlFile};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
+struct Neighbor<W: Ord + Clone + Add<Output=W> + Display> {
+    index: usize,
+    direct_cost: W,
+    dv: Vec<DVValue<W>>
+}
+
+#[derive(Debug, Clone)]
 struct Node<W: Ord + Clone + Add<Output=W> + Display> {
     name: String,
     dv: Vec<DVValue<W>>,
-    inbox: Vec<(usize, Vec<DVValue<W>>)>,
-    index: usize,
-    connected: Vec<(usize, W)>,
+    neighbors: Vec<Neighbor<W>>,
+    index: usize
 }
 
 #[derive(Debug)]
@@ -81,9 +87,8 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
             result.insert(name.to_string(), Node {
                 name: name.to_string(),
                 dv: dv_vector,
-                inbox: Vec::new(),
-                index,
-                connected: Vec::new(),
+                neighbors: Vec::new(),
+                index
             });
 
             node_names_out.insert(index, name.to_string());
@@ -139,18 +144,17 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
 
         writeln!(writer, "\t</tr>")?;
 
-        let mut inbox_sorted = node.inbox.clone();
-        inbox_sorted.sort_by_key(|pair| pair.0);
 
-        for (index, inbox) in &inbox_sorted {
+
+        for neighbor in &node.neighbors {
             writeln!(
                 writer,
                 "\t<tr>\n\t\t<th>{}</th>",
-                self.node_names.get(&index).unwrap()
+                self.node_names.get(&neighbor.index).unwrap()
             )?;
 
-            for (_, inbox_value) in inbox.iter().enumerate() {
-                writeln!(writer, "\t\t<td>{}</td>", inbox_value.write_html_long(&self.node_names))?;
+            for v in &neighbor.dv {
+                writeln!(writer, "\t\t<td>{}</td>", v.write_html_long(&self.node_names))?;
             }
 
             writeln!(writer, "\t</tr>")?;
@@ -161,25 +165,79 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
         Ok(())
     }
 
-    fn apply_operations(&self, operations: Vec<Operation<W>>) -> Self {
+    fn build_world(
+        &self,
+        relations: &HashMap<(usize, usize), W>,
+        main_dvs: &HashMap<usize, Vec<DVValue<W>>>,
+        inbox_dvs: &HashMap<usize, Vec<DVValue<W>>>,
+        advance_generation: bool
+    ) -> Self {
         let mut new_state: HashMap<String, Node<W>> = HashMap::new();
 
+        for (name, node) in &self.nodes {
+            let mut neighbors:Vec<Neighbor<W>> = Vec::new();
+
+            for ((node_a, node_b), new_w) in relations {
+                if *node_a == node.index {
+                    neighbors.push(Neighbor{
+                        index: *node_b,
+                        direct_cost: new_w.to_owned(),
+                        dv: inbox_dvs.get(node_b).unwrap().to_owned()
+                    });
+                }
+            }
+
+            neighbors.sort_by_key(|n| n.index);
+
+            new_state.insert(name.to_string(), Node {
+                name: node.name.to_owned(),
+                dv: main_dvs.get(&node.index).unwrap().to_owned(),
+                index: node.index,
+                neighbors
+            });
+        }
+
+        let generation =
+            if advance_generation {
+                self.generation + 1
+            } else {
+                self.generation
+            };
+
+        World { nodes: new_state, generation, node_names: self.node_names.to_owned() }
+    }
+
+    fn copy_relations(&self) -> HashMap<(usize, usize), W> {
         let mut relations: HashMap<(usize, usize), W> = HashMap::new();
-        let mut new_dvs: HashMap<usize, Vec<DVValue<W>>> = HashMap::new();
 
         for (_, node) in &self.nodes {
-            for (conn, v) in &node.connected {
-                relations.insert((node.index, conn.to_owned()), v.to_owned());
+            for neighbors in &node.neighbors {
+                relations.insert((node.index, neighbors.index), neighbors.direct_cost.to_owned());
             }
+        }
 
-            let mut new_dv = Vec::new();
+        relations
+    }
+
+    fn copy_dvs(&self) -> HashMap<usize, Vec<DVValue<W>>> {
+        let mut dvs: HashMap<usize, Vec<DVValue<W>>> = HashMap::new();
+
+        for (_, node) in &self.nodes {
+            let mut dv = Vec::new();
 
             for v in &node.dv {
-                new_dv.push(v.clone());
+                dv.push(v.clone());
             }
 
-            new_dvs.insert(node.index, new_dv);
+            dvs.insert(node.index, dv);
         }
+
+        dvs
+    }
+
+    fn apply_operations<Writer:Write>(&self, writer:&mut Writer, operations: Vec<Operation<W>>) -> Result<Self, Box<dyn Error>> {
+        let mut relations: HashMap<(usize, usize), W> = self.copy_relations();
+        let mut new_dvs: HashMap<usize, Vec<DVValue<W>>> = self.copy_dvs();
 
         for op in operations {
             match op {
@@ -208,27 +266,19 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
             }
         }
 
-        for (name, node) in &self.nodes {
-            let mut inbox: Vec<(usize, Vec<DVValue<W>>)> = Vec::new();
-            let mut connected: Vec<(usize, W)> = Vec::new();
+        self.build_world(
+            &relations,
+            &new_dvs,
+            &self.copy_dvs(),
+            false
+        ).print_state(writer)?;
 
-            for ((node_a, node_b), new_w) in &relations {
-                if *node_a == node.index {
-                    inbox.push((*node_b, new_dvs.get(node_b).unwrap().to_owned()));
-                    connected.push((*node_b, new_w.to_owned()))
-                }
-            }
-
-            new_state.insert(name.to_string(), Node {
-                name: node.name.to_owned(),
-                dv: new_dvs.get(&node.index).unwrap().to_owned(),
-                inbox,
-                index: node.index,
-                connected,
-            });
-        }
-
-        World { nodes: new_state, generation: self.generation, node_names: self.node_names.to_owned() }
+        Ok(self.build_world(
+            &relations,
+            &new_dvs,
+            &new_dvs,
+            false
+        ))
     }
 
     fn sorted_nodes(&self) -> Vec<&Node<W>> {
@@ -260,22 +310,9 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
         writeln!(writer, "<h2>t={}</h2>", self.generation + 1)?;
 
         let mut changed_nodes: HashSet<usize> = HashSet::new();
-
-        let mut relations: HashMap<(usize, usize), W> = HashMap::new();
-        let mut new_dvs: HashMap<usize, Vec<DVValue<W>>> = HashMap::new();
-
-        let mut indexes:Vec<&usize> = self.node_names.keys().collect();
-        indexes.sort();
+        let mut new_dvs: HashMap<usize, Vec<DVValue<W>>> = self.copy_dvs();
 
         for node in self.sorted_nodes() {
-            let mut direct_cost: HashMap<usize, W> = HashMap::new();
-
-            for (conn, v) in &node.connected {
-                relations.insert((node.index, conn.to_owned()), v.to_owned());
-
-                direct_cost.insert(conn.to_owned(), v.to_owned());
-            }
-
             let mut new_dv = Vec::new();
             let mut index: usize = 0;
 
@@ -283,31 +320,31 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
 
             for v_old in &node.dv {
                 if index == node.index {
-                    // lines.push(format!("D<sub>{}</sub>({})=0", node.name, node.name));
                     new_dv.push(DVValue::SameNode);
                 } else {
                     // For debug printing
                     let mut formula =
                         HtmlFormula::new(index, node.index);
 
-
-                    for (node_b, node_b_vector) in &node.inbox {
-                        let cost = direct_cost.get(node_b).unwrap().to_owned();
-
-                        if *node_b == index {
+                    for neighbour in &node.neighbors {
+                        if neighbour.index == index {
                             formula.add_direct(
-                                *node_b,
+                                neighbour.index,
                                 node.index,
-                                cost
+                                neighbour
+                                    .direct_cost
+                                    .to_owned()
                             );
                         } else {
                             formula.add_indirect(
-                                *node_b,
+                                neighbour.index,
                                 node.index,
-                                cost,
+                                neighbour
+                                    .direct_cost
+                                    .to_owned() ,
                                 index,
-                                *node_b,
-                                node_b_vector
+                                neighbour.index,
+                                neighbour.dv
                                     .get(index)
                                     .unwrap()
                                     .into()
@@ -341,29 +378,12 @@ impl<W: Ord + Clone + Add<Output=W> + Display> World<W> {
         if changed_nodes.is_empty() {
             Ok(NewState::NotChanged)
         } else {
-            let mut new_state: HashMap<String, Node<W>> = HashMap::new();
-
-            for (name, node) in &self.nodes {
-                let mut inbox: Vec<(usize, Vec<DVValue<W>>)> = Vec::new();
-                let mut connected: Vec<(usize, W)> = Vec::new();
-
-                for ((node_a, node_b), new_w) in &relations {
-                    if *node_a == node.index {
-                        inbox.push((*node_b, new_dvs.get(node_b).unwrap().to_owned()));
-                        connected.push((*node_b, new_w.to_owned()))
-                    }
-                }
-
-                new_state.insert(name.to_string(), Node {
-                    name: node.name.to_owned(),
-                    dv: new_dvs.get(&node.index).unwrap().to_owned(),
-                    inbox,
-                    index: node.index,
-                    connected,
-                });
-            }
-
-            Ok(NewState::Changed(World { nodes: new_state, generation: self.generation + 1, node_names: self.node_names.to_owned() }))
+            Ok(NewState::Changed(self.build_world(
+                &self.copy_relations(),
+                &new_dvs,
+                &new_dvs,
+                true
+            )))
         }
     }
 }
@@ -388,7 +408,7 @@ fn exc2(p:&Path) -> Result<(), Box<dyn Error>> {
     let world: World<u32> = World::new(vec!("A", "B", "C", "D", "E", "F", "G", "H"));
     //println!("op:{:#?}", world.add_interface("A","B",12)?);
 
-    let init = world.apply_operations(vec!(
+    let init = world.apply_operations(&mut html_file, vec!(
         world.add_interface("A", "D", 3)?,
         world.add_interface("A", "G", 1)?,
         world.add_interface("B", "E", 2)?,
@@ -400,17 +420,13 @@ fn exc2(p:&Path) -> Result<(), Box<dyn Error>> {
         world.add_interface("E", "F", 1)?,
         world.add_interface("E", "H", 3)?,
         world.add_interface("F", "H", 8)?,
-    ));
-
-    init.print_state(&mut html_file)?;
+    ))?;
 
     let stable = run_until_stable(&mut html_file, init)?;
 
-    let new_init = stable.apply_operations(vec!(
+    let new_init = stable.apply_operations(&mut html_file, vec!(
         world.add_interface("C", "F", 30)?
-    ));
-
-    new_init.print_state(&mut html_file)?;
+    ))?;
 
     run_until_stable(&mut html_file, new_init)?;
 
@@ -423,22 +439,19 @@ fn exc3(p:&Path) -> Result<(), Box<dyn Error>> {
     let world: World<u32> = World::new(vec!("A", "B", "C", "D"));
     //println!("op:{:#?}", world.add_interface("A","B",12)?);
 
-    let init = world.apply_operations(vec!(
+    let init = world.apply_operations(&mut html_file, vec!(
         world.add_interface("A", "B", 2)?,
         world.add_interface("B", "C", 7)?,
         world.add_interface("C", "D", 4)?,
         world.add_interface("A", "D", 8)?,
         world.add_interface("B", "D", 9)?
-    ));
+    ))?;
 
-    init.print_state(&mut html_file)?;
     let world1_done = run_until_stable(&mut html_file, init)?;
 
-    let world2 = world1_done.apply_operations(vec!(
+    let world2 = world1_done.apply_operations(&mut html_file, vec!(
         world1_done.add_interface("B", "D", 80)?
-    ));
-
-    world2.print_state(&mut html_file)?;
+    ))?;
 
     run_until_stable(&mut html_file, world2)?;
 
