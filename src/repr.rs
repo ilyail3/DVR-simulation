@@ -10,6 +10,7 @@ use std::fs::File;
 use std::path::Path;
 use std::error::Error;
 use std::process::Command;
+use std::fs;
 
 impl<W: Ord + Clone + Add<Output=W> + Display> DVValue<W> {
     pub fn write_html_long(&self, names: &BTreeMap<usize, String>) -> String {
@@ -337,11 +338,20 @@ impl HtmlFiles {
     pub fn create<F>(&mut self, cb: F) -> Result<(), Box<dyn Error>>
         where F : Fn(&mut File) -> Result<(), Box<dyn Error>>  {
 
+        let path = Path::new(self.folder.as_str());
+        let styles_filename = Path::new("styles.css");
+
+        if self.index == 0 {
+            if !path.exists() {
+                fs::create_dir_all(path)?;
+            }
+
+            fs::copy(styles_filename, path.join(styles_filename))?;
+        }
+
         let file_name = format!("{}_{}.html", self.prefix.as_str(), self.index);
         let pdf_file_name = format!("{}_{}.pdf", self.prefix.as_str(), self.index);
         self.index += 1;
-        let path = Path::new(self.folder.as_str());
-
 
         {
             let mut file = File::create(path.join(file_name.as_str()))?;

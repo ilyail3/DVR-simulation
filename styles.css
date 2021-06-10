@@ -1,0 +1,43 @@
+@media print {
+    @page { margin: 0; }
+    body { margin: 0; }
+}
+body {
+    font-size: 12px;
+}
+
+.wrapper table {
+    border-collapse: collapse;
+    border: 1px solid black;
+    grid-column-start: 1;
+    grid-column-end: 1;
+    break-inside: avoid;
+}
+.wrapper table td,
+.wrapper table th{
+    border: 1px solid black;
+}
+.wrapper table th {
+    min-width: 70px;
+}
+
+.wrapper table th:first-child {
+    min-width: 20px;
+}
+
+.wrapper .details {
+    grid-column-start: 2;
+    grid-column-end: 2;
+    break-inside: avoid;
+}
+
+.wrapper {
+    display: grid;
+    grid-gap: 10px;
+    grid-template-columns: auto 100%;
+}
+
+.wrapper h2{
+    grid-column-start: 1;
+    grid-column-end: 2;
+}

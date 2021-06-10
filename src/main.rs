@@ -490,10 +490,61 @@ fn exc3(p:&Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn tir1(p:&Path) -> Result<(), Box<dyn Error>> {
+    let mut html_factory = HtmlFiles::new(p.to_str().unwrap(), "tir2");
+
+    let world: World<u32> = World::new(vec!("A", "B", "C", "D"));
+    //println!("op:{:#?}", world.add_interface("A","B",12)?);
+
+    let init = world.apply_operations(&mut html_factory, vec!(
+        world.add_interface("A", "B", 2)?,
+        world.add_interface("A", "D", 10)?,
+        world.add_interface("B", "C", 1)?,
+        world.add_interface("B", "D", 20)?,
+        world.add_interface("C", "D", 2)?
+    ))?;
+
+    let world1_done = run_until_stable(&mut html_factory, init)?;
+
+    let world2 = world1_done.apply_operations(&mut html_factory, vec!(
+        world1_done.add_interface("C", "D", 80)?
+    ))?;
+
+    run_until_stable(&mut html_factory, world2)?;
+
+    Ok(())
+}
+
+fn tir2(p:&Path) -> Result<(), Box<dyn Error>> {
+    let mut html_factory = HtmlFiles::new(p.to_str().unwrap(), "tir2");
+
+    let world: World<u32> = World::new(vec!("A", "B", "C", "D"));
+    //println!("op:{:#?}", world.add_interface("A","B",12)?);
+
+    let init = world.apply_operations(&mut html_factory, vec!(
+        world.add_interface("A", "B", 1)?,
+        world.add_interface("A", "D", 4)?,
+        world.add_interface("B", "C", 7)?,
+        world.add_interface("B", "D", 2)?,
+        world.add_interface("C", "D", 3)?
+    ))?;
+
+    let world1_done = run_until_stable(&mut html_factory, init)?;
+
+    let world2 = world1_done.apply_operations(&mut html_factory, vec!(
+        world1_done.add_interface("B", "D", 60)?
+    ))?;
+
+    run_until_stable(&mut html_factory, world2)?;
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let output_path = Path::new("/Users/ilya/Desktop/dvr");
-    exc2(output_path)?;
-    exc3(output_path)?;
+    let output_path = Path::new("/Users/ilya/Desktop/dvr4");
+    //exc2(output_path)?;
+    //exc3(output_path)?;
+    tir2(output_path);
 
     Ok(())
 }
